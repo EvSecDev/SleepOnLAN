@@ -1,0 +1,12 @@
+{
+  "listenIP": "127.0.0.1",
+  "listenPort": "49573",
+  "destinationIP": "127.0.0.1",
+  "destinationPort": "3493",
+  "Key": "eda93e096f02c8ee5dff91d5d911cfb3",
+  "IV": "cc6399259b2c",
+  "currentCounter": 5,
+  "sendMessage": "shutdownserver",
+  "syslogDestinationIP": "127.0.0.1",
+  "syslogDestinationPort": "1514"
+}
