@@ -14,6 +14,7 @@ import (
 	"net"
 	"os/exec"
 	"strconv"
+	"strings"
 )
 
 type parseJsonConfig struct {
@@ -37,7 +38,7 @@ func sendErrorToSyslog(syslogAddress *net.UDPAddr, errorDescription string, erro
 }
 
 func sendSyslogMessage(syslogAddress *net.UDPAddr, message string) error {
-	udpLocalSocket, err := net.DialUDP("udp4", nil, syslogAddress)
+	udpLocalSocket, err := net.DialUDP("udp", nil, syslogAddress)
 	if err != nil {
 		return err
 	}
@@ -96,7 +97,13 @@ func main() {
 		return
 	}
 
-	syslogAddress, err := net.ResolveUDPAddr("udp4", config.SyslogIP+":"+config.SyslogPort)
+        var syslogAddress *net.UDPAddr
+        if strings.Contains(config.ListenIP, ":") {
+                syslogAddress, err = net.ResolveUDPAddr("udp", "["+config.SyslogIP+"]:"+config.SyslogPort)
+        } else {
+	        syslogAddress, err = net.ResolveUDPAddr("udp", config.SyslogIP+":"+config.SyslogPort)
+        }
+
 	if err != nil {
 		log.Fatal("Error resolving syslog address: ", err)
 		return
@@ -121,11 +128,17 @@ func main() {
 	sendErrorToSyslog(syslogAddress, "Error decoding IV", err)
 
 	// Network
-	listenAddress, err := net.ResolveUDPAddr("udp4", config.ListenIP+":"+config.ListenPort)
-	sendErrorToSyslog(syslogAddress, "Error compiling address IP and Port pair", err)
+	var listenAddress *net.UDPAddr
+	if strings.Contains(config.ListenIP, ":") {
+		listenAddress, err = net.ResolveUDPAddr("udp", "["+config.ListenIP+"]:"+config.ListenPort)
+	        sendErrorToSyslog(syslogAddress, "Error compiling address IPv6 and Port pair", err)
+	} else {
+		listenAddress, err = net.ResolveUDPAddr("udp", config.ListenIP+":"+config.ListenPort)
+	        sendErrorToSyslog(syslogAddress, "Error compiling address IPv4 and Port pair", err)
+	}
 
-	udpLocalSocket, err := net.ListenUDP("udp4", listenAddress)
-	sendErrorToSyslog(syslogAddress, "Error creating UDP socket", err)
+        udpLocalSocket, err := net.ListenUDP("udp", listenAddress)
+        sendErrorToSyslog(syslogAddress, "Error creating UDP socket", err)
 	defer udpLocalSocket.Close()
 
 	recvbuffer := make([]byte, 1024)

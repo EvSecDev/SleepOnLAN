@@ -13,6 +13,7 @@ import (
 	"log/syslog"
 	"net"
 	"os"
+	"strings"
 )
 
 type parseJsonConfig struct {
@@ -83,7 +84,13 @@ func main() {
 	}
 
 	// Setup Remote Logging
-	syslogAddress, err := net.ResolveUDPAddr("udp", config.SyslogIP+":"+config.SyslogPort)
+        var syslogAddress *net.UDPAddr
+        if strings.Contains(config.ListenIP, ":") {
+                syslogAddress, err = net.ResolveUDPAddr("udp", "["+config.SyslogIP+"]:"+config.SyslogPort)
+        } else {
+                syslogAddress, err = net.ResolveUDPAddr("udp", config.SyslogIP+":"+config.SyslogPort)
+        }
+
 	if err != nil {
 		log.Fatal("Error resolving syslog address:", err)
 		return
@@ -120,14 +127,25 @@ func main() {
 	sendMessage := hex.EncodeToString(CipherText)
 
 	// Network
-	listenAddress := config.ListenIP + ":" + config.ListenPort
-	destinationAddress := config.DestinationIP + ":" + config.DestinationPort
+        var listenAddress string
+	var destinationAddress string
+        if strings.Contains(config.ListenIP, ":") {
+                listenAddress = "["+config.ListenIP+"]:"+config.ListenPort
+        } else {
+                listenAddress = config.ListenIP+":"+config.ListenPort
+        }
 
-	udpLocalSocket, err := net.ListenPacket("udp4", listenAddress)
+        if strings.Contains(config.ListenIP, ":") {
+                destinationAddress = "["+config.DestinationIP+"]:"+config.DestinationPort
+        } else {
+                destinationAddress = config.DestinationIP+":"+config.DestinationPort
+        }
+
+	udpLocalSocket, err := net.ListenPacket("udp", listenAddress)
 	sendErrorToSyslog(syslogAddress, "Error creating local UDP socket", err)
 	defer udpLocalSocket.Close()
 
-	udpRemoteSocket, err := net.ResolveUDPAddr("udp4", destinationAddress)
+	udpRemoteSocket, err := net.ResolveUDPAddr("udp", destinationAddress)
 	sendErrorToSyslog(syslogAddress, "Error resolving destination address", err)
 
 	_, err = udpLocalSocket.WriteTo([]byte(sendMessage), udpRemoteSocket)
