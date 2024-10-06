@@ -1,0 +1,20 @@
+{
+  "listenIP": "127.0.0.1",
+  "listenPort": "49573",
+  "remoteIP": "127.0.0.1",
+  "remotePort": "3493",
+  "authKey": "eda93e096f02c8ee5dff91d5d911cfb3",
+  "authIV": "cc6399259b2cd84efa9371cb",
+  "filterMessage": "shutdownserver",
+  "remoteLog":
+  {
+    "enabled": false,
+    "syslogDestinationIP": "127.0.0.1",
+    "syslogDestinationPort": "1514"
+  },
+  "fileLog":
+  {
+    "enabled": false,
+    "logPath": "/var/log/sol.log"
+  }
+}

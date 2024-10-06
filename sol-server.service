@@ -1,0 +1,14 @@
+[Unit]
+Description=Sleep On LAN Server
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/sleeponlan --server -c /etc/solconfig.json
+User=root
+Group=root
+Type=exec
+RestartSec=1min
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
