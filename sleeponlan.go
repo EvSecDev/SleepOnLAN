@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log/syslog"
 	"net"
 	"os"
@@ -28,18 +27,26 @@ import (
 // ###################################
 
 type JsonConfig struct {
-	ListenIP         string `json:"listenIP"`
-	ListenPort       string `json:"listenPort"`
-	RemoteIP         string `json:"remoteIP"`
-	RemotePort       string `json:"remotePort"`
-	Key              string `json:"authKey"`
-	IV               string `json:"authIV"`
-	FilterMessage    string `json:"filterMessage"`
-	RemoteLogEnabled bool   `json:"remoteLog.enabled"`
-	SyslogIP         string `json:"remoteLog.syslogDestinationIP,omitempty"`
-	SyslogPort       string `json:"remoteLog.syslogDestinationPort,omitempty"`
-	FileLogEnabled   bool   `json:"fileLog.enabled"`
-	FileLogPath      string `json:"fileLog.logPath,omitempty"`
+	ListenIP      string    `json:"listenIP"`
+	ListenPort    string    `json:"listenPort"`
+	RemoteIP      string    `json:"remoteIP"`
+	RemotePort    string    `json:"remotePort"`
+	Key           string    `json:"authKey"`
+	IV            string    `json:"authIV"`
+	FilterMessage string    `json:"filterMessage"`
+	RemoteLog     RemoteLog `json:"remoteLog"`
+	FileLog       FileLog   `json:"fileLog"`
+}
+
+type RemoteLog struct {
+	Enabled    bool   `json:"enabled"`
+	SyslogIP   string `json:"syslogDestinationIP"`
+	SyslogPort string `json:"syslogDestinationPort"`
+}
+
+type FileLog struct {
+	Enabled bool   `json:"enabled"`
+	Path    string `json:"logPath"`
 }
 
 type JsonMultiHost struct {
@@ -104,7 +111,7 @@ func logMessage(message string) {
 }
 
 func logToFile(message string) error {
-	err := ioutil.WriteFile(logFilePath, []byte(message), 0644)
+	err := os.WriteFile(logFilePath, []byte(message), 0644)
 	if err != nil {
 		return err
 	}
@@ -205,9 +212,9 @@ func main() {
 
 	// Meta info print out
 	if *versionFlagExists {
-		fmt.Printf("SleepOnLAN v1.0.0 compiled using GO(%s) v1.23.1 on %s architecture %s\n", runtime.Compiler, runtime.GOOS, runtime.GOARCH)
+		fmt.Printf("SleepOnLAN v1.0.1 compiled using GO(%s) v1.23.1 on %s architecture %s\n", runtime.Compiler, runtime.GOOS, runtime.GOARCH)
 		fmt.Printf("First party packages:\n")
-		fmt.Printf("bytes crypto/aes crypto/cipher encoding/binary encoding/hex encoding/json crypto/sha256 runtime flag fmt io/ioutil log/syslog net os os/exec strings strconv time\n")
+		fmt.Printf("bytes crypto/aes crypto/cipher encoding/binary encoding/hex encoding/json crypto/sha256 runtime flag fmt log/syslog net os os/exec strings strconv time\n")
 		os.Exit(0)
 	}
 
@@ -217,7 +224,7 @@ func main() {
 	TestOnlyFilterMessage := "deadbeefdeadbeefdeadbeefdeadbeef1928374655647382910"
 
 	// Grab configuration options from file
-	jsonConfig, err := ioutil.ReadFile(configFile)
+	jsonConfig, err := os.ReadFile(configFile)
 	logError("failed to read config file", err, true)
 
 	// Parse json from config file
@@ -231,20 +238,20 @@ func main() {
 	}
 
 	// Setup File Logging
-	if config.FileLogEnabled {
-		logFilePath = config.FileLogPath
+	if config.FileLog.Enabled {
+		logFilePath = config.FileLog.Path
 		fileLogEnabled = true
 	} else {
 		fileLogEnabled = false
 	}
 
 	// Setup Remote Logging
-	if config.RemoteLogEnabled {
+	if config.RemoteLog.Enabled {
 		// Set global for syslog address
-		if strings.Contains(config.ListenIP, ":") {
-			syslogAddress, err = net.ResolveUDPAddr("udp", "["+config.SyslogIP+"]:"+config.SyslogPort)
+		if strings.Contains(config.RemoteLog.SyslogIP, ":") {
+			syslogAddress, err = net.ResolveUDPAddr("udp", "["+config.RemoteLog.SyslogIP+"]:"+config.RemoteLog.SyslogPort)
 		} else {
-			syslogAddress, err = net.ResolveUDPAddr("udp", config.SyslogIP+":"+config.SyslogPort)
+			syslogAddress, err = net.ResolveUDPAddr("udp", config.RemoteLog.SyslogIP+":"+config.RemoteLog.SyslogPort)
 		}
 		logError("failed to resolve syslog address", err, true)
 
@@ -256,10 +263,10 @@ func main() {
 
 	// Validate key and IV from config
 	if len(config.Key) != 32 {
-		logError("invalid key size", fmt.Errorf("The key must be 32 bytes (256-bit), but the key is %d bytes.", len(config.Key)), true)
+		logError("invalid key size", fmt.Errorf("the key must be 32 bytes (256-bit), but the key is %d bytes", len(config.Key)), true)
 	}
 	if len(config.IV) != 24 {
-		logError("invalid IV size", fmt.Errorf("The IV must be 24 bytes (192-bit), but the IV is %d bytes.", len(config.IV)), true)
+		logError("invalid IV size", fmt.Errorf("the iv must be 24 bytes (192-bit), but the IV is %d bytes", len(config.IV)), true)
 	}
 
 	// Format key and IV
@@ -298,7 +305,7 @@ func main() {
 		var remoteHosts []JsonMultiHost
 		if multiHostsFile != "" {
 			// Grab host overrides from file
-			jsonMultiHostFile, err := ioutil.ReadFile(multiHostsFile)
+			jsonMultiHostFile, err := os.ReadFile(multiHostsFile)
 			logError("failed to read multihosts file", err, true)
 
 			// Parse json from multihost file
@@ -434,7 +441,6 @@ func serverMode(config JsonConfig, precheckCommand *exec.Cmd, TestOnlyFilterMess
 
 		// Read from buffer and clear buffer
 		receivedCipherText := recvBuffer[:recvDataLen]
-		recvBuffer = recvBuffer[:0]
 
 		// Check correct network endpoint
 		if remoteAddr.IP.String() != config.RemoteIP || strconv.Itoa(remoteAddr.Port) != config.RemotePort {
@@ -455,12 +461,12 @@ func serverMode(config JsonConfig, precheckCommand *exec.Cmd, TestOnlyFilterMess
 		if plainTextMessage == TestOnlyFilterMessage {
 			_, err := exec.LookPath(filepath.Base(command.Path))
 			if err != nil {
-				logMessage("TEST: Failed, Shutdown executable not found.\n")
+				logMessage("Failed test: Shutdown executable not found.\n")
 			}
 			logMessage(fmt.Sprintf("TEST: Received Valid Shutdown Packet from %s:%v. Shutdown executable found.\n", remoteAddr.IP, remoteAddr.Port))
 			continue
 		} else if plainTextMessage != TestOnlyFilterMessage {
-			logMessage(fmt.Sprintf("TEST: Received Invalid Shutdown Packet from %s:%v. Message Data is incorrect.\n", remoteAddr.IP, remoteAddr.Port))
+			logMessage(fmt.Sprintf("Failed test: Received Invalid Shutdown Packet from %s:%v. Message Data is incorrect.\n", remoteAddr.IP, remoteAddr.Port))
 			continue
 		}
 
@@ -478,7 +484,7 @@ func serverMode(config JsonConfig, precheckCommand *exec.Cmd, TestOnlyFilterMess
 			err = precheckCommand.Run()
 			if err != nil {
 				// Abort shutdown if external script is an error exit (ideally, purposely code 1)
-				logMessage(fmt.Sprintf("Aborting shutdown, precheck script shutdown conditions are not met.\n"))
+				logMessage("Aborting shutdown, precheck script shutdown conditions are not met.")
 				continue
 			}
 		}
@@ -488,7 +494,7 @@ func serverMode(config JsonConfig, precheckCommand *exec.Cmd, TestOnlyFilterMess
 		command.Stderr = &stderr
 
 		// Shutdown the system
-		logMessage(fmt.Sprintf("Initiating system shutdown.\n"))
+		logMessage("Initiating system shutdown.")
 		err = command.Run()
 		if err == nil {
 			break
