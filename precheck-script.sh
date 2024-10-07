@@ -1,6 +1,6 @@
 #!/bin/bash
 
-ActiveUserSubnet="10.92.30."
+ActiveUserSubnet="10.0.0."
 
 # If the remote network is connected, disallow shutdown
 if [[ $(ss -t state established | grep $ActiveUserSubnet) ]]

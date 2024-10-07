@@ -111,7 +111,15 @@ func logMessage(message string) {
 }
 
 func logToFile(message string) error {
-	err := os.WriteFile(logFilePath, []byte(message), 0644)
+	// Open file and append
+	logFile, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+
+	// Write log to file
+	_, err = logFile.Write([]byte(message))
 	if err != nil {
 		return err
 	}
@@ -212,7 +220,7 @@ func main() {
 
 	// Meta info print out
 	if *versionFlagExists {
-		fmt.Printf("SleepOnLAN v1.0.1 compiled using GO(%s) v1.23.1 on %s architecture %s\n", runtime.Compiler, runtime.GOOS, runtime.GOARCH)
+		fmt.Printf("SleepOnLAN v1.0.2 compiled using GO(%s) v1.23.1 on %s architecture %s\n", runtime.Compiler, runtime.GOOS, runtime.GOARCH)
 		fmt.Printf("First party packages:\n")
 		fmt.Printf("bytes crypto/aes crypto/cipher encoding/binary encoding/hex encoding/json crypto/sha256 runtime flag fmt log/syslog net os os/exec strings strconv time\n")
 		os.Exit(0)
@@ -358,14 +366,11 @@ func main() {
 			}
 		}
 
-		// Format exec command
-		precheckCommand := exec.Command(externalCheckScript)
-
 		// Show progress to user
-		logMessage(fmt.Sprintf("SleepOnLAN Server started, listening on UDP socket %s", listenAddress))
+		logMessage(fmt.Sprintf("SleepOnLAN Server started, listening on UDP socket %s\n", listenAddress))
 
 		// Start the server
-		serverMode(config, precheckCommand, TestOnlyFilterMessage, encryptionIV, AESGCMCipherBlock, command, udpLocalSocket)
+		serverMode(config, externalCheckScript, TestOnlyFilterMessage, encryptionIV, AESGCMCipherBlock, command, udpLocalSocket)
 
 		// Close and exit
 		udpLocalSocket.Close()
@@ -417,7 +422,7 @@ func clientConnect(destinationAddress string, TestOnlyFilterMessage string, byte
 //	SERVER - RECEVING SHUTDOWN
 //
 // ###################################
-func serverMode(config JsonConfig, precheckCommand *exec.Cmd, TestOnlyFilterMessage string, encryptionIV []byte, AESGCMCipherBlock cipher.AEAD, command *exec.Cmd, udpLocalSocket *net.UDPConn) {
+func serverMode(config JsonConfig, externalCheckScript string, TestOnlyFilterMessage string, encryptionIV []byte, AESGCMCipherBlock cipher.AEAD, command *exec.Cmd, udpLocalSocket *net.UDPConn) {
 	// Recover from panic
 	defer func() {
 		if r := recover(); r != nil {
@@ -437,14 +442,17 @@ func serverMode(config JsonConfig, precheckCommand *exec.Cmd, TestOnlyFilterMess
 
 		// Wait for incoming packet and write payload into buffer
 		recvDataLen, remoteAddr, err := udpLocalSocket.ReadFromUDP(recvBuffer)
-		logError("failed to read from UDP socket buffer", err, true)
+		if err != nil {
+			logMessage(fmt.Sprintf("Failed: reading UDP socket resulted in error: %v\n", err))
+			continue
+		}
 
 		// Read from buffer and clear buffer
 		receivedCipherText := recvBuffer[:recvDataLen]
 
 		// Check correct network endpoint
 		if remoteAddr.IP.String() != config.RemoteIP || strconv.Itoa(remoteAddr.Port) != config.RemotePort {
-			logMessage(fmt.Sprintf("Received Invalid Shutdown Packet from %s:%v. IP or Port incorrect.\n", remoteAddr.IP, remoteAddr.Port))
+			logMessage(fmt.Sprintf("Failed: received Invalid Shutdown Packet from %s:%v. IP or Port incorrect.\n", remoteAddr.IP, remoteAddr.Port))
 			continue
 		}
 
@@ -452,7 +460,7 @@ func serverMode(config JsonConfig, precheckCommand *exec.Cmd, TestOnlyFilterMess
 		sessionIV := MutateIVwithTime(encryptionIV)
 		plainText, err := AESGCMCipherBlock.Open(nil, sessionIV, receivedCipherText, nil)
 		if err != nil {
-			logError(fmt.Sprintf("Failed to retrieve plain text from cipher text from %s:%v", remoteAddr.IP, remoteAddr.Port), err, false)
+			logMessage(fmt.Sprintf("Failed: decryption of payload from %s:%v resulted in error: %v\n", remoteAddr.IP, remoteAddr.Port, err))
 			continue
 		}
 		plainTextMessage := string(plainText)
@@ -461,30 +469,33 @@ func serverMode(config JsonConfig, precheckCommand *exec.Cmd, TestOnlyFilterMess
 		if plainTextMessage == TestOnlyFilterMessage {
 			_, err := exec.LookPath(filepath.Base(command.Path))
 			if err != nil {
-				logMessage("Failed test: Shutdown executable not found.\n")
+				logMessage("Failed: (test) Shutdown executable not found.\n")
 			}
-			logMessage(fmt.Sprintf("TEST: Received Valid Shutdown Packet from %s:%v. Shutdown executable found.\n", remoteAddr.IP, remoteAddr.Port))
-			continue
-		} else if plainTextMessage != TestOnlyFilterMessage {
-			logMessage(fmt.Sprintf("Failed test: Received Invalid Shutdown Packet from %s:%v. Message Data is incorrect.\n", remoteAddr.IP, remoteAddr.Port))
+			logMessage(fmt.Sprintf("Success: (test) Received Valid Shutdown Packet from %s:%v. Shutdown executable found.\n", remoteAddr.IP, remoteAddr.Port))
 			continue
 		}
 
 		// Check message validity against config string or validity against the hard coded test message
 		if plainTextMessage != config.FilterMessage {
-			logMessage(fmt.Sprintf("Received Invalid Shutdown Packet from %s:%v. Message Data is incorrect.\n", remoteAddr.IP, remoteAddr.Port))
+			logMessage(fmt.Sprintf("Failed: received Invalid Shutdown Packet from %s:%v. Message Data is incorrect.\n", remoteAddr.IP, remoteAddr.Port))
 			continue
 		}
 
-		logMessage(fmt.Sprintf("Received Valid Shutdown Packet from %s:%v.\n", remoteAddr.IP, remoteAddr.Port))
-
 		// If precheck script was supplied, run and check
-		if precheckCommand != nil {
+		if externalCheckScript != "" {
+			// Format exec command
+			precheckCommand := exec.Command(externalCheckScript)
+
 			// Run external precheck script
 			err = precheckCommand.Run()
 			if err != nil {
+				// Log error if not the expected exit status
+				if err.Error() != "exit status 1" {
+					logMessage(fmt.Sprintf("Failed: Pre-check script error: %v\n", err))
+					continue
+				}
 				// Abort shutdown if external script is an error exit (ideally, purposely code 1)
-				logMessage("Aborting shutdown, precheck script shutdown conditions are not met.")
+				logMessage("Failed: Aborting shutdown, precheck script shutdown conditions are not met.\n")
 				continue
 			}
 		}
@@ -494,12 +505,12 @@ func serverMode(config JsonConfig, precheckCommand *exec.Cmd, TestOnlyFilterMess
 		command.Stderr = &stderr
 
 		// Shutdown the system
-		logMessage("Initiating system shutdown.")
+		logMessage(fmt.Sprintf("Success: Received Valid Shutdown Packet from %s:%v. Initiating system shutdown.\n", remoteAddr.IP, remoteAddr.Port))
 		err = command.Run()
 		if err == nil {
 			break
 		}
 
-		logMessage(fmt.Sprintf("Failed to run shutdown command - %s", stderr.String()))
+		logMessage(fmt.Sprintf("Failed: shutdown command resulted in error: %s\n", stderr.String()))
 	}
 }
