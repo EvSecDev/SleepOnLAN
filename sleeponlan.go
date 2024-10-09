@@ -17,7 +17,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -27,15 +26,19 @@ import (
 // ###################################
 
 type JsonConfig struct {
-	ListenIP      string    `json:"listenIP"`
-	ListenPort    string    `json:"listenPort"`
-	RemoteIP      string    `json:"remoteIP"`
-	RemotePort    string    `json:"remotePort"`
-	Key           string    `json:"authKey"`
-	IV            string    `json:"authIV"`
-	FilterMessage string    `json:"filterMessage"`
-	RemoteLog     RemoteLog `json:"remoteLog"`
-	FileLog       FileLog   `json:"fileLog"`
+	ListenIP      string		`json:"listenIP"`
+	ListenPort    string		`json:"listenPort"`
+	Remote	      []RemoteHosts	`json:"remote"`
+	EncryptionKey string      	`json:"encryptionKey"`
+	TOTPSecret    string      	`json:"TOTPSecret"`
+	FilterMessage string     	`json:"filterMessage"`
+	RemoteLog     RemoteLog  	`json:"remoteLog"`
+	FileLog       FileLog    	`json:"fileLog"`
+}
+
+type RemoteHosts struct {
+	IP      string    `json:"IP"`
+	Port    string    `json:"Port"`
 }
 
 type RemoteLog struct {
@@ -47,11 +50,6 @@ type RemoteLog struct {
 type FileLog struct {
 	Enabled bool   `json:"enabled"`
 	Path    string `json:"logPath"`
-}
-
-type JsonMultiHost struct {
-	RemoteIP   string `json:"remoteIP"`
-	RemotePort string `json:"remotePort"`
 }
 
 // For syslog messages
@@ -82,8 +80,9 @@ func logError(errorDescription string, errorMessage error, exitRequested bool) {
 	}
 }
 
-func logMessage(message string) {
+func logMessage(initmessage string) {
 	var err error
+	message := initmessage + "\n"
 
 	// Write to file
 	if fileLogEnabled {
@@ -107,10 +106,14 @@ func logMessage(message string) {
 	}
 
 	// Write to stdout if other messages aren't selected or fail
-	fmt.Printf("%s\n", message)
+	fmt.Printf("%s", message)
 }
 
 func logToFile(message string) error {
+	// Add formatting to log line
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	logMsg := timestamp + " sleeponlan: " + message
+
 	// Open file and append
 	logFile, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -119,7 +122,7 @@ func logToFile(message string) error {
 	defer logFile.Close()
 
 	// Write log to file
-	_, err = logFile.Write([]byte(message))
+	_, err = logFile.Write([]byte(logMsg))
 	if err != nil {
 		return err
 	}
@@ -155,26 +158,28 @@ func logToRemote(message string) error {
 //      CRYPTO
 // ###################################
 
-// This adds a time factor to the mutation that an IV normally provides to an encrypted payload - with a shared IV, this creates time-based authentication
-func MutateIVwithTime(totpKey []byte) []byte {
-	// Using current time in UTC
+// This adds a time factor to mutate an IV that normally provides altered cipher text per encrypted payload - with a shared secret, this creates time-based authentication
+func MutateIVwithTime(totpSecret []byte) []byte {
+	// Get current time
 	currentUTCTime := time.Now().UTC()
 
-	// Getting current second
+	// Get the current second
 	currentSecond := currentUTCTime.Second()
 
-	// Getting the block
-	blockTime := (currentSecond / 15) * 15
+	// Determine the 15sec block that the current second is in
+	secondBlockTime := (currentSecond / 15) * 15
 
-	// Slice for current time in block form
-	totpCounter := make([]byte, 8)
+	// 64bit slice for current time in block form
+	currentBlockTime := make([]byte, 8)
 
-	// Determine which block current time is in
-	binary.BigEndian.PutUint64(totpCounter, uint64(currentUTCTime.Unix()-int64(currentSecond)+int64(blockTime)))
+	// Create full time block which current time is in
+	binary.BigEndian.PutUint64(currentBlockTime, uint64(currentUTCTime.Unix()-int64(currentSecond)+int64(secondBlockTime)))
 
-	// Hash combination of current time block and original IV
-	CounterAndKey := append(totpCounter, totpKey...)
-	TOTP := sha256.Sum256(CounterAndKey)
+	// Add current time block to the shared secret
+	TimeBlockAndSecret := append(currentBlockTime, totpSecret...)
+
+	// Hash combination of current time block and shared secret
+	TOTP := sha256.Sum256(TimeBlockAndSecret)
 
 	// Return truncated hash for use as the current sessions encryption IV
 	return TOTP[:12]
@@ -201,35 +206,30 @@ func WaitForTimeWindow() {
 }
 
 // ###################################
-//
 //	START HERE
-//
 // ###################################
+
 func main() {
 	var configFile string
-	var multiHostsFile string
 	var externalCheckScript string
 	versionFlagExists := flag.Bool("V", false, "Print Version Information")
 	flag.StringVar(&configFile, "c", "solconfig.json", "Path to the configuration file")
 	serverFlagExists := flag.Bool("server", false, "Start the server (receiving shutdown)")
 	clientFlagExists := flag.Bool("client", false, "Run the client (sending shutdown)")
-	flag.StringVar(&multiHostsFile, "multihost-file", "", "Override single host with array of hosts in file (requires --client)")
 	sendTest := flag.Bool("send-test", false, "Send test shutdown packet (requires --client)")
+	useTCP := flag.Bool("tcp", false, "Use TCP communication for client/server network connections (Does not apply to remote log addresses)")
 	flag.StringVar(&externalCheckScript, "precheck-script", "", "Run external script prior to shutdown. If script exits with code 1, shutdown will be aborted. (requires --server)")
 	flag.Parse()
 
 	// Meta info print out
 	if *versionFlagExists {
-		fmt.Printf("SleepOnLAN v1.0.2 compiled using GO(%s) v1.23.1 on %s architecture %s\n", runtime.Compiler, runtime.GOOS, runtime.GOARCH)
+		fmt.Printf("SleepOnLAN v1.1.0 compiled using GO(%s) v1.23.1 on %s architecture %s\n", runtime.Compiler, runtime.GOOS, runtime.GOARCH)
 		fmt.Printf("First party packages:\n")
-		fmt.Printf("bytes crypto/aes crypto/cipher encoding/binary encoding/hex encoding/json crypto/sha256 runtime flag fmt log/syslog net os os/exec strings strconv time\n")
+		fmt.Printf("bytes crypto/aes crypto/cipher encoding/binary encoding/hex encoding/json crypto/sha256 runtime flag fmt log/syslog net os os/exec strings time\n")
 		os.Exit(0)
 	}
 
 	var err error
-
-	// Set test message text
-	TestOnlyFilterMessage := "deadbeefdeadbeefdeadbeefdeadbeef1928374655647382910"
 
 	// Grab configuration options from file
 	jsonConfig, err := os.ReadFile(configFile)
@@ -239,11 +239,6 @@ func main() {
 	var config JsonConfig
 	err = json.Unmarshal(jsonConfig, &config)
 	logError("failed to parse JSON config", err, true)
-
-	// If test is requested (and in client mode), override message with test string
-	if *sendTest && *clientFlagExists {
-		config.FilterMessage = TestOnlyFilterMessage
-	}
 
 	// Setup File Logging
 	if config.FileLog.Enabled {
@@ -256,11 +251,8 @@ func main() {
 	// Setup Remote Logging
 	if config.RemoteLog.Enabled {
 		// Set global for syslog address
-		if strings.Contains(config.RemoteLog.SyslogIP, ":") {
-			syslogAddress, err = net.ResolveUDPAddr("udp", "["+config.RemoteLog.SyslogIP+"]:"+config.RemoteLog.SyslogPort)
-		} else {
-			syslogAddress, err = net.ResolveUDPAddr("udp", config.RemoteLog.SyslogIP+":"+config.RemoteLog.SyslogPort)
-		}
+		syslogRemoteAddr := PairIPPort(config.RemoteLog.SyslogIP, config.RemoteLog.SyslogPort)
+		syslogAddress, err = net.ResolveUDPAddr("udp", syslogRemoteAddr)
 		logError("failed to resolve syslog address", err, true)
 
 		// Set global for message handling awareness
@@ -269,19 +261,19 @@ func main() {
 		remoteLogEnabled = false
 	}
 
-	// Validate key and IV from config
-	if len(config.Key) != 32 {
-		logError("invalid key size", fmt.Errorf("the key must be 32 bytes (256-bit), but the key is %d bytes", len(config.Key)), true)
+	// Validate key and secret from config
+	if len(config.EncryptionKey) != 32 {
+		logError("invalid key size", fmt.Errorf("the key must be 32 bytes (256-bit), but the key is %d bytes", len(config.EncryptionKey)), true)
 	}
-	if len(config.IV) != 24 {
-		logError("invalid IV size", fmt.Errorf("the iv must be 24 bytes (192-bit), but the IV is %d bytes", len(config.IV)), true)
+	if len(config.TOTPSecret) != 24 {
+		logError("invalid totp secret size", fmt.Errorf("the secret should be 24 bytes (192-bit), but it is %d bytes", len(config.TOTPSecret)), true)
 	}
 
 	// Format key and IV
-	encryptionKey, err := hex.DecodeString(config.Key)
+	encryptionKey, err := hex.DecodeString(config.EncryptionKey)
 	logError("failed to decode supplied key", err, true)
 
-	encryptionIV, err := hex.DecodeString(config.IV)
+	TOTPSecret, err := hex.DecodeString(config.TOTPSecret)
 	logError("failed to decode supplied encryption IV", err, true)
 
 	// Setup encrypted message
@@ -292,54 +284,29 @@ func main() {
 	logError("failed to create AES-GCM cipher", err, true)
 
 	// Setup Network info
-	var listenAddress *net.UDPAddr
-	if strings.Contains(config.ListenIP, ":") {
-		listenAddress, err = net.ResolveUDPAddr("udp", "["+config.ListenIP+"]:"+config.ListenPort)
-	} else {
-		listenAddress, err = net.ResolveUDPAddr("udp", config.ListenIP+":"+config.ListenPort)
-	}
-	logError("failed to compile address IP and Port pair", err, true)
+	listenAddress := PairIPPort(config.ListenIP, config.ListenPort)
 
-	// Open local UDP socket
-	udpLocalSocket, err := net.ListenUDP("udp", listenAddress)
-	logError("failed to create UDP socket", err, true)
-	defer udpLocalSocket.Close()
+	// Prep message text
+	testMessage := "deadbeefdeadbeefdeadbeefdeadbeef1928374655647382910"
+
+	// If test is requested (and in client mode), override message with test string
+	if *sendTest && *clientFlagExists {
+		config.FilterMessage = testMessage
+	}
+
+	// Unified value for client, server udp and tcp payload sizes
+	maxPayloadSize := 1300
 
 	// Run client if requested
 	if *clientFlagExists {
-		byteMessage := []byte(config.FilterMessage)
-
-		// If multihost file exists, load and parse, otherwise add single host from main config
-		var remoteHosts []JsonMultiHost
-		if multiHostsFile != "" {
-			// Grab host overrides from file
-			jsonMultiHostFile, err := os.ReadFile(multiHostsFile)
-			logError("failed to read multihosts file", err, true)
-
-			// Parse json from multihost file
-			err = json.Unmarshal([]byte(jsonMultiHostFile), &remoteHosts)
-			logError("failed to parse JSON multihost", err, true)
-		} else {
-			// Write single host to array
-			remoteHosts = append(remoteHosts, JsonMultiHost{})
-			remoteHosts[0] = JsonMultiHost{RemoteIP: config.RemoteIP, RemotePort: config.RemotePort}
-		}
-
-		for _, remoteHost := range remoteHosts {
+		// Loop over endpoints in config and send packet
+		for arrayPosition, _ := range config.Remote {
 			// Setup remote address
-			var destinationAddress string
-			if strings.Contains(remoteHost.RemoteIP, ":") {
-				destinationAddress = "[" + remoteHost.RemoteIP + "]:" + remoteHost.RemotePort
-			} else {
-				destinationAddress = remoteHost.RemoteIP + ":" + remoteHost.RemotePort
-			}
+			remoteAddress := PairIPPort(config.Remote[arrayPosition].IP, config.Remote[arrayPosition].Port)
 
-			// Run connection
-			clientConnect(destinationAddress, TestOnlyFilterMessage, byteMessage, encryptionIV, AESGCMCipherBlock, udpLocalSocket)
+			// Send packet
+			clientConnect(config.FilterMessage, TOTPSecret, AESGCMCipherBlock, listenAddress, remoteAddress, maxPayloadSize, *useTCP)
 		}
-
-		// Close and exit
-		udpLocalSocket.Close()
 		os.Exit(0)
 	}
 
@@ -366,14 +333,18 @@ func main() {
 			}
 		}
 
-		// Show progress to user
-		logMessage(fmt.Sprintf("SleepOnLAN Server started, listening on UDP socket %s\n", listenAddress))
+		// Join exepcted IP and port for compare on connect
+		confRemoteAddr := PairIPPort(config.Remote[0].IP, config.Remote[0].Port)
+
+		// Packet processing rate limit - 1 second / 5 packets (200ms in between packets)
+		rateLimiter := time.Tick(200 * time.Millisecond)
 
 		// Start the server
-		serverMode(config, externalCheckScript, TestOnlyFilterMessage, encryptionIV, AESGCMCipherBlock, command, udpLocalSocket)
-
-		// Close and exit
-		udpLocalSocket.Close()
+		if *useTCP {
+			serverModeTCP(listenAddress, confRemoteAddr, rateLimiter, externalCheckScript, testMessage, config.FilterMessage, maxPayloadSize, TOTPSecret, AESGCMCipherBlock, command)
+		} else {
+			serverModeUDP(listenAddress, confRemoteAddr, rateLimiter, externalCheckScript, testMessage, config.FilterMessage, maxPayloadSize, TOTPSecret, AESGCMCipherBlock, command)
+		}
 		os.Exit(0)
 	}
 
@@ -383,134 +354,247 @@ func main() {
 }
 
 // ###################################
-//
 //	CLIENT - SENDING SHUTDOWN
-//
 // ###################################
-func clientConnect(destinationAddress string, TestOnlyFilterMessage string, byteMessage []byte, encryptionIV []byte, AESGCMCipherBlock cipher.AEAD, udpLocalSocket *net.UDPConn) {
+
+func clientConnect(filterMessage string, TOTPSecret []byte, AESGCMCipherBlock cipher.AEAD, listenAddress string, remoteAddress string, maxPayloadSize int, useTCP bool) {
 	// Recover from panic
 	defer func() {
 		if r := recover(); r != nil {
-			logError(fmt.Sprintf("SOL client panic while sending shutdown to %s", destinationAddress), fmt.Errorf("%v", r), false)
+			logError(fmt.Sprintf("SOL client panic while sending shutdown to %s", remoteAddress), fmt.Errorf("%v", r), false)
 		}
 	}()
 
-	// Setup socket to send to remote host
-	udpRemoteSocket, err := net.ResolveUDPAddr("udp", destinationAddress)
-	logError("failed to resolve destination address", err, true)
+	// Resolve remote addr and local addr
+	var listenAddr net.Addr
+	var remoteAddr net.Addr
+	var L4Protocol string
+	var err error
+	if useTCP {
+		L4Protocol = "tcp"
+		listenAddr, err = net.ResolveTCPAddr(L4Protocol, listenAddress)
+		remoteAddr, err = net.ResolveTCPAddr(L4Protocol, remoteAddress)
+	} else {
+		L4Protocol = "udp"
+		listenAddr, err = net.ResolveUDPAddr(L4Protocol, listenAddress)
+		remoteAddr, err = net.ResolveUDPAddr(L4Protocol, remoteAddress)
+	}
+	logError("failed to resolve addresses", err ,true)
+
+	// Create a Dialer with the local address
+	dialer := net.Dialer {
+		LocalAddr: listenAddr,
+	}
+
+	// Open socket to remote
+	socket, err := dialer.Dial(L4Protocol, remoteAddr.String())
+	logError("failed to open local socket", err, true)
+	defer socket.Close()
 
 	// Encrypt the message with time-based IV
 	WaitForTimeWindow()
-	sessionIV := MutateIVwithTime(encryptionIV)
-	CipherText := AESGCMCipherBlock.Seal(nil, sessionIV, byteMessage, nil)
+	sessionIV := MutateIVwithTime(TOTPSecret)
+	CipherText := AESGCMCipherBlock.Seal(nil, sessionIV, []byte(filterMessage), nil)
 
-	// Ensure CipherText is not larger than max MTU (for the UDP payload) - multiple packets/fragmentation is not supported here
-	if len(CipherText) > 1458 {
-		logError("failed to send message", fmt.Errorf("unable to send udp payload larger than 1458 bytes (current payload is %d bytes)", len(CipherText)), true)
+	// Ensure CipherText is not too large - multiple packets/fragmentation is not supported in this program
+	if len(CipherText) > maxPayloadSize {
+		logError("failed to send message", fmt.Errorf("unable to send payload larger than %d bytes (payload is currently %d bytes)", maxPayloadSize, len(CipherText)), true)
 	}
 
 	// Send the message to the remote host
-	_, err = udpLocalSocket.WriteTo(CipherText, udpRemoteSocket)
+	_, err = socket.Write(CipherText)
 	logError("failed to send message", err, true)
 
 	// Notify
-	logMessage(fmt.Sprintf("Sent Shutdown Packet to %s", destinationAddress))
+	logMessage(fmt.Sprintf("Sent Shutdown Packet to %s", remoteAddress))
 }
 
 // ###################################
-//
 //	SERVER - RECEVING SHUTDOWN
-//
 // ###################################
-func serverMode(config JsonConfig, externalCheckScript string, TestOnlyFilterMessage string, encryptionIV []byte, AESGCMCipherBlock cipher.AEAD, command *exec.Cmd, udpLocalSocket *net.UDPConn) {
+
+func serverModeUDP(listenAddress string, confRemoteAddr string, rateLimiter <-chan time.Time, externalCheckScript string, testMessage string, filterMessage string, maxPayloadSize int, TOTPSecret []byte, AESGCMCipherBlock cipher.AEAD, command *exec.Cmd) {
 	// Recover from panic
 	defer func() {
 		if r := recover(); r != nil {
-			logError("SOL Server panic while listening for shutdown", fmt.Errorf("%v", r), true)
+			logError("SOL Server panic while listening for UDP shutdown", fmt.Errorf("%v", r), true)
 		}
 	}()
 
-	// Packet processing rate limit - 1 second / 5 packets
-	packetRateLimit := time.Second / time.Duration(5)
-	rateLimiter := time.Tick(packetRateLimit)
+	// Setup network info
+	localAddress, err := net.ResolveUDPAddr("udp", listenAddress)
+	logError("failed to resolve local UDP address", err, true)
+
+	// Open local socket
+	localSocket, err := net.ListenUDP("udp", localAddress)
+	logError("failed to create local UDP socket", err, true)
+	defer localSocket.Close()
+
+	// Show progress to user
+	logMessage(fmt.Sprintf("SleepOnLAN Server started, listening on UDP socket %s", listenAddress))
 
 	// Wait for data in receive buffer and process
-	recvBuffer := make([]byte, 1458)
+	recvBuffer := make([]byte, maxPayloadSize)
 	for {
 		// Wait for the next tick to limit the packet processing rate
 		<-rateLimiter
 
 		// Wait for incoming packet and write payload into buffer
-		recvDataLen, remoteAddr, err := udpLocalSocket.ReadFromUDP(recvBuffer)
+		recvDataLen, remoteAddr, err := localSocket.ReadFrom(recvBuffer)
 		if err != nil {
-			logMessage(fmt.Sprintf("Failed: reading UDP socket resulted in error: %v\n", err))
+			logMessage(fmt.Sprintf("Failed: reading socket resulted in error: %v", err))
 			continue
 		}
 
-		// Read from buffer and clear buffer
-		receivedCipherText := recvBuffer[:recvDataLen]
+		// Process received packet
+		BreakLoop := ParsePayload(recvBuffer, recvDataLen, maxPayloadSize, remoteAddr.String(), confRemoteAddr, externalCheckScript, testMessage, filterMessage, TOTPSecret, AESGCMCipherBlock, command)
 
-		// Check correct network endpoint
-		if remoteAddr.IP.String() != config.RemoteIP || strconv.Itoa(remoteAddr.Port) != config.RemotePort {
-			logMessage(fmt.Sprintf("Failed: received Invalid Shutdown Packet from %s:%v. IP or Port incorrect.\n", remoteAddr.IP, remoteAddr.Port))
-			continue
-		}
-
-		// Decrypt received message
-		sessionIV := MutateIVwithTime(encryptionIV)
-		plainText, err := AESGCMCipherBlock.Open(nil, sessionIV, receivedCipherText, nil)
-		if err != nil {
-			logMessage(fmt.Sprintf("Failed: decryption of payload from %s:%v resulted in error: %v\n", remoteAddr.IP, remoteAddr.Port, err))
-			continue
-		}
-		plainTextMessage := string(plainText)
-
-		// If message text is test, log and continue
-		if plainTextMessage == TestOnlyFilterMessage {
-			_, err := exec.LookPath(filepath.Base(command.Path))
-			if err != nil {
-				logMessage("Failed: (test) Shutdown executable not found.\n")
-			}
-			logMessage(fmt.Sprintf("Success: (test) Received Valid Shutdown Packet from %s:%v. Shutdown executable found.\n", remoteAddr.IP, remoteAddr.Port))
-			continue
-		}
-
-		// Check message validity against config string or validity against the hard coded test message
-		if plainTextMessage != config.FilterMessage {
-			logMessage(fmt.Sprintf("Failed: received Invalid Shutdown Packet from %s:%v. Message Data is incorrect.\n", remoteAddr.IP, remoteAddr.Port))
-			continue
-		}
-
-		// If precheck script was supplied, run and check
-		if externalCheckScript != "" {
-			// Format exec command
-			precheckCommand := exec.Command(externalCheckScript)
-
-			// Run external precheck script
-			err = precheckCommand.Run()
-			if err != nil {
-				// Log error if not the expected exit status
-				if err.Error() != "exit status 1" {
-					logMessage(fmt.Sprintf("Failed: Pre-check script error: %v\n", err))
-					continue
-				}
-				// Abort shutdown if external script is an error exit (ideally, purposely code 1)
-				logMessage("Failed: Aborting shutdown, precheck script shutdown conditions are not met.\n")
-				continue
-			}
-		}
-
-		// Create a buffer to capture stderr
-		var stderr bytes.Buffer
-		command.Stderr = &stderr
-
-		// Shutdown the system
-		logMessage(fmt.Sprintf("Success: Received Valid Shutdown Packet from %s:%v. Initiating system shutdown.\n", remoteAddr.IP, remoteAddr.Port))
-		err = command.Run()
-		if err == nil {
+		// Exit server if requested (shutdown commencing)
+		if BreakLoop {
 			break
 		}
-
-		logMessage(fmt.Sprintf("Failed: shutdown command resulted in error: %s\n", stderr.String()))
 	}
 }
+
+func serverModeTCP(listenAddress string, confRemoteAddr string, rateLimiter <-chan time.Time, externalCheckScript string, testMessage string, filterMessage string, maxPayloadSize int, TOTPSecret []byte, AESGCMCipherBlock cipher.AEAD, command *exec.Cmd) {
+	// Recover from panic
+	defer func() {
+		if r := recover(); r != nil {
+			logError("SOL Server panic while listening for TCP shutdown", fmt.Errorf("%v", r), true)
+		}
+	}()
+
+	// Start local listener
+	listener, err := net.Listen("tcp", listenAddress)
+	logError("failed to create local TCP listener", err, true)
+	defer listener.Close()
+
+	// Show progress to user
+	logMessage(fmt.Sprintf("SleepOnLAN Server started, listening on TCP socket %s", listenAddress))
+
+	// Wait for data in receive buffer and process
+	recvBuffer := make([]byte, maxPayloadSize)
+	for {
+		// Wait for the next tick to limit the connection processing rate
+		<-rateLimiter
+
+		// Accept incoming connection
+		tcpConn, err := listener.Accept()
+		if err != nil {
+			logMessage(fmt.Sprintf("Failed: error accepting TCP connection: %v", err))
+			tcpConn.Close()
+			continue
+		}
+
+		// Write payload into buffer
+		recvDataLen, err := tcpConn.Read(recvBuffer)
+		if err != nil {
+			logMessage(fmt.Sprintf("Failed: reading packet payload resulted in error: %v", err))
+			tcpConn.Close()
+			continue
+		}
+
+		// Close connection
+		tcpConn.Close()
+
+		// Process received packet
+		BreakLoop := ParsePayload(recvBuffer, recvDataLen, maxPayloadSize, tcpConn.RemoteAddr().String(), confRemoteAddr, externalCheckScript, testMessage, filterMessage, TOTPSecret, AESGCMCipherBlock, command)
+
+		// Exit server if requested (shutdown commencing)
+		if BreakLoop {
+			break
+		}
+	}
+}
+
+func ParsePayload(recvBuffer []byte, recvDataLen int, maxPayloadSize int, remoteAddr string, confRemoteAddr string, externalCheckScript string, testMessage string, filterMessage string, TOTPSecret []byte, AESGCMCipherBlock cipher.AEAD, command *exec.Cmd) bool {
+	// Don't process further if data length is over max payload size
+	if recvDataLen > maxPayloadSize {
+		return false
+	}
+
+	// Read from buffer
+	receivedCipherText := recvBuffer[:recvDataLen]
+
+	// Check correct network endpoint
+	if remoteAddr != confRemoteAddr {
+		logMessage(fmt.Sprintf("Failed: received Invalid Shutdown Packet from %s. IP or Port incorrect.", remoteAddr))
+		return false
+	}
+
+	// Decrypt received message
+	sessionIV := MutateIVwithTime(TOTPSecret)
+	plainMessage, err := AESGCMCipherBlock.Open(nil, sessionIV, receivedCipherText, nil)
+	if err != nil {
+		logMessage(fmt.Sprintf("Failed: decryption of payload from %s resulted in error: %v", remoteAddr, err))
+		return false
+	}
+
+	// If message text is test, log and continue
+	if string(plainMessage) == testMessage {
+		_, err := exec.LookPath(filepath.Base(command.Path))
+		if err != nil {
+			logMessage("Failed: (test) Shutdown executable not found.")
+			return false
+		}
+		logMessage(fmt.Sprintf("Success: (test) Received Valid Shutdown Packet from %s. Shutdown executable found.", remoteAddr))
+		return false
+	}
+
+	// Check message validity against config string or validity against the hard coded test message
+	if string(plainMessage) != filterMessage {
+		logMessage(fmt.Sprintf("Failed: received Invalid Shutdown Packet from %s. Message Data is incorrect.", remoteAddr))
+		return false
+	}
+
+	// If precheck script was supplied, run and check
+	if externalCheckScript != "" {
+		// Format exec command
+		precheckCommand := exec.Command(externalCheckScript)
+
+		// Run external precheck script
+		err = precheckCommand.Run()
+		if err != nil {
+			// Log error if not the expected exit status
+			if err.Error() != "exit status 1" {
+				logMessage(fmt.Sprintf("Failed: Pre-check script error: %v", err))
+				return false
+			}
+			// Abort shutdown if external script is an error exit (ideally, purposely code 1)
+			logMessage("Failed: Aborting shutdown, precheck script shutdown conditions are not met.")
+			return false
+		}
+	}
+
+	// Create a buffer to capture stderr
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+
+	// Shutdown the system
+	logMessage(fmt.Sprintf("Success: Received Valid Shutdown Packet from %s. Initiating system shutdown.", remoteAddr))
+	err = command.Run()
+	if err == nil {
+		// Shutdown commencing, break processing loop and allow server to exit
+		return true
+	}
+
+	// If shutdown failed, return and continue processing packets
+	logMessage(fmt.Sprintf("Failed: shutdown command resulted in error: %s", stderr.String()))
+	return false
+}
+
+// ###################################
+//	MISC PARSING
+// ###################################
+
+func PairIPPort(IP string, Port string) string {
+	var IPPort string
+	if strings.Contains(IP, ":") {
+		IPPort = "[" + IP + "]:" + Port
+	} else {
+		IPPort = IP + ":" + Port
+	}
+	return IPPort
+}
+
+

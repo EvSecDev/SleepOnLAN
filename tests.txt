@@ -1,0 +1,64 @@
+# Setup
+cp sleeponlan-linux-amd64-static /tmp/solserver
+cp solconfig.json /tmp/solconfig-server.json
+
+sed -i 's/"Port": "3493"/"Port": "49573"/' /tmp/solconfig.json
+sed -i 's/"listenPort": "49573",/"listenPort": "3493",/' /tmp/solconfig.json 
+
+# Quick tests
+# UDP
+./solserver -c solconfig-server.json -server &
+./solclient -c solconfig-client.json -client -send-test
+pkill solserver
+
+# TCP
+./solserver -c solconfig-server.json -server -tcp &
+./solclient -c solconfig-client.json -client -tcp -send-test
+pkill solserver
+
+# Test full shutdown (with fake shutdown binary)
+mv /usr/sbin/poweroff /usr/sbin/poweroff.old
+
+echo "#!/bin/bash
+echo "Shutdown command was successfully started"
+exit 0" > /usr/sbin/poweroff
+chmod 755 /usr/sbin/poweroff
+
+# UDP
+./solserver -c solconfig-server.json -server &
+./solclient -c solconfig-client.json -client
+pkill solserver
+
+# TCP
+./solserver -c solconfig-server.json -server -tcp &
+./solclient -c solconfig-client.json -client -tcp
+pkill solserver
+
+rm /usr/sbin/poweroff
+mv /usr/sbin/poweroff.old /usr/sbin/poweroff
+
+# Port number incorrect
+sed -i 's/Port": "3493"/Port": "66584"/' $testdir/solconfig-server.json
+./solserver -c solconfig-server.json -server
+
+sed -i 's/Port": "66584"/Port": "0"/' $testdir/solconfig-server.json
+./solserver -c solconfig-server.json -server
+
+sed -i 's/Port": "0"/Port": "-1"/' $testdir/solconfig-server.json
+./solserver -c solconfig-server.json -server
+
+sed -i 's/Port": "-1"/Port": "string"/' $testdir/solconfig-server.json
+./solserver -c solconfig-server.json -server
+
+sed -i 's/Port": "string"/Port": "3493"/' $testdir/solconfig-server.json
+
+# Domain connect check
+echo "127.0.0.1 test.domain" >> /etc/hosts
+sed -i 's/"IP": "127.0.0.1",/"IP": "test.domain",/' $testdir/solconfig-client.json
+
+./solserver -c solconfig-server.json -server &
+./solclient -c solconfig-client.json -client -send-test || logError "Domain connect test (udp) failed" "true"
+pkill solserver
+
+sed -i 's/"IP": "test.domain",/"IP": "127.0.0.1",/' $testdir/solconfig-client.json
+sed -i 's/127.0.0.1 test.domain//' /etc/hosts
