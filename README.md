@@ -23,14 +23,22 @@ Notes:
 ### Capabilities 
 
 ```
-Usage of sleeponlan:
--V				Print Version Information
--c [string]			Path to the configuration file (default "solconfig.json")
--client				Run the client (sending shutdown) 
--server				Start the server (receiving shutdown)
--send-test			Send test shutdown packet (requires --client)
--precheck-script [string]	Run external script prior to shutdown. If script exits with code 1, shutdown will be aborted. (requires --server)
--tcp				Use TCP communication for client/server network connections (Does not apply to remote log addresses)
+Usage: sleeponlan [OPTIONS]...
+
+Examples:
+    sleeponlan --config </etc/solconfig.json> --server [--tcp] [--precheck-script </opt/checkforusers.sh>]
+    sleeponlan --config </etc/solconfig.json> --client [--tcp] [--remote-hosts <www,proxy,db01>] [--send-test]
+
+Options:
+    -c, --config </path/to/json>               Path to the configuration file [default: solconfig.json]
+    -C, --client                               Run the client (sending shutdown)
+    -S, --server                               Start the server (receiving shutdown)
+    -p, --precheck-script </path/to/script>    Run external script prior to shutdown. If script exits with status code 1, shutdown will be aborted. (requires '--server')
+    -T, --send-test                            Send test shutdown packet (requires '--client')
+    -t, --tcp                                  Use TCP communication for client/server network connections (Does not apply to remote log addresses)
+    -r, --remote-hosts <IP1,IP2,IP3...>        Override which hosts by IP address from config to send shutdown packet to
+    -V, --version                              Show version and packages
+    -v, --versionid                            Show only version number
 ```
 
 The server and client both utilize the same executable and configuration file.
@@ -50,6 +58,10 @@ If you desire to check any local system conditions and abort the issued shutdown
 An exit code of 0 from the external script will mean that there are no blocking issues and the server WILL ISSUE a shutdown for the system.
 An exit code of 1 from the external script will mean there are blocking issues and the server WILL ABORT a shutdown.
 
+If you have many remote hosts defined in your client configuration, and wish to change which hosts the client sends a shutdown packet to, there is the option `--remote-hosts`.
+This option will let you choose which IPs from the client's configuration that will receive a shutdown packet (or test packet).
+You only have to provide it with a comma separated list of IP address matching those in the JSON config.
+
 ### Deployment
 
 1. Configure the client and server JSON config file with your own network settings, Key, TOTPSecret, and filterMessage.
@@ -62,3 +74,4 @@ An exit code of 1 from the external script will mean there are blocking issues a
 4. Start the server binary from your terminal or a service with the `--server` argument.
 5. Configure whatever triggering action you have to start the binary with the `--client` argument when a server shutdown is desired
   - If multiple remote hosts are desired, use the included example multihost JSON file and add all your server IP/Port pairs in there and use the `--multihost-file` argument with the client.
+
