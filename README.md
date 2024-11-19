@@ -2,7 +2,7 @@
 Remote Shutdown Utility made in Go for use on Linux servers.
 
 This program is designed to shutdown a server over the network from a central server as securely as possible.
-Think of this as the opposite of WOL (Wake-on-LAN) with authentication and encryption, hence the name SOL (Sleep-on-LAN).
+Think of this as the opposite of WOL (Wake-on-LAN), hence the name SOL (Sleep-on-LAN), but with authentication and encryption.
 
 The functionality provided here is aimed to replace what Network UPS Tools (NUT) does across a network, but with a different, more targeted approach.
 Shutdown action is performed over a single unidirectional UDP packet sent to all the servers/devices that need to be shut off.
@@ -11,7 +11,7 @@ If more reliability is needed, a TCP mode is optional to ensure shutdown packets
 For security, the program uses a time mutated IV and AES256 GCM encryption to ensure replay attack protection.
 With these security features, there is:
 - No need (like with NUT) to open holes in firewalls for all clients of a network to communicate with a central server.
-- No need for ANY reply traffic from the clients to exist, which means you can turn off any reply-to auto-rules that your firewall/router may apply to the connection.
+- No need for ANY reply traffic from the clients to exist (in UDP mode), which means you can turn off any reply-to auto-rules that your firewall/router may apply to the connection.
 - No need to worry about operating over untrusted networks. The client is able to authenticate the server and is protected against replay attacks.
 
 One use case of this program is to integrate into networking monitoring solutions to shutdown down remote hosts when the UPS has low battery.
@@ -33,10 +33,13 @@ Options:
     -c, --config </path/to/json>               Path to the configuration file [default: solconfig.json]
     -C, --client                               Run the client (sending shutdown)
     -S, --server                               Start the server (receiving shutdown)
-    -p, --precheck-script </path/to/script>    Run external script prior to shutdown. If script exits with status code 1, shutdown will be aborted. (requires '--server')
+    -p, --precheck-script </path/to/script>    Run external script prior to shutdown.
+                                               If script exits with status code 1, shutdown will be aborted 
     -T, --send-test                            Send test shutdown packet (requires '--client')
-    -t, --tcp                                  Use TCP communication for client/server network connections (Does not apply to remote log addresses)
+    -t, --tcp                                  Use TCP communication for client/server network connections
+                                               Does not apply to remote logging IP addresses
     -r, --remote-hosts <IP1,IP2,IP3...>        Override which hosts by IP address from config to send shutdown packet to
+    -g, --generate-key                         Generate encryption key for use with server or client
     -V, --version                              Show version and packages
     -v, --versionid                            Show only version number
 ```
@@ -64,10 +67,10 @@ You only have to provide it with a comma separated list of IP address matching t
 
 ### Deployment
 
-1. Configure the client and server JSON config file with your own network settings, Key, TOTPSecret, and filterMessage.
-  - You can use openssl to generate a Key and TOTPSecret:
-    - Key: `openssl rand -hex 16`
-    - TOTPSecret: `openssl rand -hex 12`
+1. Configure the client and server JSON config file with your own network settings, encryptionKey and filterMessage.
+  - You can use the program to generate an encryption key or openssl:
+    - `./sleeponlan -g`
+    - `openssl rand -hex 28`
   - The filterMessage can be whatever text you want, it is only in place to ensure the decryption process also authenticates the client.
 2. Copy the binary and JSON config file to wherever you want to initiate the shutdown from.
 3. Copy the binary and JSON config file to wherever you want to shutdown.

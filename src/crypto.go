@@ -2,14 +2,89 @@
 package main
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
+	"fmt"
+	"regexp"
 	"time"
 )
 
 // ###################################
 //      CRYPTO
 // ###################################
+
+// Creates a new 28 byte (56 char) encryption key
+// Prints key to user on success
+func generateNewKey() (err error) {
+	// Create a byte slice of the expected length
+	randomBytes := make([]byte, 28)
+
+	// Fill the byte slice with cryptographically secure random data
+	_, err = rand.Read(randomBytes)
+	if err != nil {
+		return
+	}
+
+	// Convert to string
+	newKey := hex.EncodeToString(randomBytes)
+
+	// Give to user
+	fmt.Printf("New Encryption Key: %s\n", newKey)
+	return
+}
+
+// Reads in keyfile and extracts only hex characters from it
+// Validates length is exactly 56 characters
+// Separates into key and TOTP secret
+// Creates the AESGCM cipher with the key
+func prepareEncryption(keyAndIV string) (AESGCMCipherBlock cipher.AEAD, TOTPSecret []byte, err error) {
+	// Extract just hex from key
+	HexRegEx := regexp.MustCompile(`[0-9a-fA-F]+`)
+	key := HexRegEx.FindString(keyAndIV)
+
+	// Reject invalid key length
+	if len(key) != 56 {
+		err = fmt.Errorf("invalid key size, it must be 28 bytes (56 characters)")
+		return
+	}
+
+	// Extract IV from key
+	hexKey := key[:32]
+	hexIV := key[32:]
+
+	// Decode key
+	encryptionKey, err := hex.DecodeString(hexKey)
+	if err != nil {
+		err = fmt.Errorf("hex decode failed for key: %v", err)
+		return
+	}
+
+	// Decode TOTP
+	TOTPSecret, err = hex.DecodeString(hexIV)
+	if err != nil {
+		err = fmt.Errorf("hex decode failed for totp: %v", err)
+		return
+	}
+
+	// Setup cipher
+	CipherBlock, err := aes.NewCipher(encryptionKey)
+	if err != nil {
+		err = fmt.Errorf("failed to create cipher: %v", err)
+		return
+	}
+
+	AESGCMCipherBlock, err = cipher.NewGCM(CipherBlock)
+	if err != nil {
+		err = fmt.Errorf("failed to create aead cipher: %v", err)
+		return
+	}
+
+	return
+}
 
 // This adds a time factor to mutate an IV that normally provides altered cipher text per encrypted payload - with a shared secret, this creates time-based authentication
 func MutateIVwithTime(totpSecret []byte) []byte {
@@ -57,4 +132,3 @@ func WaitForTimeWindow() {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
-

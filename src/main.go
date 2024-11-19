@@ -2,9 +2,6 @@
 package main
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -21,19 +18,18 @@ import (
 // ###################################
 
 type JsonConfig struct {
-	ListenIP      string		`json:"listenIP"`
-	ListenPort    string		`json:"listenPort"`
-	Remote	      []RemoteHosts	`json:"remote"`
-	EncryptionKey string      	`json:"encryptionKey"`
-	TOTPSecret    string      	`json:"TOTPSecret"`
-	FilterMessage string     	`json:"filterMessage"`
-	RemoteLog     RemoteLog  	`json:"remoteLog"`
-	FileLog       FileLog    	`json:"fileLog"`
+	ListenIP      string        `json:"listenIP"`
+	ListenPort    string        `json:"listenPort"`
+	Remote        []RemoteHosts `json:"remote"`
+	EncryptionKey string        `json:"encryptionKey"`
+	FilterMessage string        `json:"filterMessage"`
+	RemoteLog     RemoteLog     `json:"remoteLog"`
+	FileLog       FileLog       `json:"fileLog"`
 }
 
 type RemoteHosts struct {
-	IP      string    `json:"IP"`
-	Port    string    `json:"Port"`
+	IP   string `json:"IP"`
+	Port string `json:"Port"`
 }
 
 type RemoteLog struct {
@@ -47,6 +43,12 @@ type FileLog struct {
 	Path    string `json:"logPath"`
 }
 
+// For payload parsing
+const maxPayloadSize = int(1300)
+
+// For sending test messages
+const testMessage = string("deadbeefdeadbeefdeadbeefdeadbeef1928374655647382910")
+
 // For syslog messages
 var remoteLogEnabled bool
 var syslogAddress *net.UDPAddr
@@ -56,7 +58,7 @@ var fileLogEnabled bool
 var logFilePath string
 
 // Program Meta Info
-const progVersion = "v1.2.0"
+const progVersion = string("v1.2.1")
 const usage = `
 Examples:
     sleeponlan --config </etc/solconfig.json> --server [--tcp] [--precheck-script </opt/checkforusers.sh>]
@@ -66,10 +68,13 @@ Options:
     -c, --config </path/to/json>               Path to the configuration file [default: solconfig.json]
     -C, --client                               Run the client (sending shutdown)
     -S, --server                               Start the server (receiving shutdown)
-    -p, --precheck-script </path/to/script>    Run external script prior to shutdown. If script exits with status code 1, shutdown will be aborted. (requires '--server')
+    -p, --precheck-script </path/to/script>    Run external script prior to shutdown (requires '--server')
+                                                 If script exits with status code 1, shutdown will be aborted
     -T, --send-test                            Send test shutdown packet (requires '--client')
-    -t, --tcp                                  Use TCP communication for client/server network connections (Does not apply to remote log addresses)
+    -t, --tcp                                  Use TCP communication for client/server network connections
+                                                 Does not apply to remote logging IP addresses
     -r, --remote-hosts <IP1,IP2,IP3...>        Override which hosts by IP address from config to send shutdown packet to
+    -g, --generate-key                         Generate encryption key for use with server or client
     -V, --version                              Show version and packages
     -v, --versionid                            Show only version number
 `
@@ -87,6 +92,7 @@ func main() {
 	var useTCP bool
 	var hostOverride string
 	var externalCheckScript string
+	var genNewKey bool
 	var versionFlagExists bool
 	var versionNumberFlagExists bool
 
@@ -105,6 +111,8 @@ func main() {
 	flag.BoolVar(&useTCP, "tcp", false, "")
 	flag.StringVar(&hostOverride, "r", "", "")
 	flag.StringVar(&hostOverride, "remote-hosts", "", "")
+	flag.BoolVar(&genNewKey, "g", false, "")
+	flag.BoolVar(&genNewKey, "generate-key", false, "")
 	flag.BoolVar(&versionFlagExists, "V", false, "")
 	flag.BoolVar(&versionFlagExists, "version", false, "")
 	flag.BoolVar(&versionNumberFlagExists, "v", false, "")
@@ -118,7 +126,7 @@ func main() {
 	if versionFlagExists {
 		fmt.Printf("SleepOnLAN %s compiled using %s(%s) on %s architecture %s\n", progVersion, runtime.Version(), runtime.Compiler, runtime.GOOS, runtime.GOARCH)
 		fmt.Printf("First party packages:\n")
-		fmt.Printf("bytes crypto/aes crypto/cipher encoding/binary encoding/hex encoding/json crypto/sha256 runtime flag fmt log/syslog net os os/exec strings time\n")
+		fmt.Printf("bytes crypto/aes crypto/cipher crypto/rand encoding/binary encoding/hex encoding/json crypto/sha256 runtime flag fmt log/syslog net os os/exec strings time\n")
 		os.Exit(0)
 	}
 	if versionNumberFlagExists {
@@ -127,6 +135,13 @@ func main() {
 	}
 
 	var err error
+
+	// New key if user requested
+	if genNewKey {
+		err = generateNewKey()
+		logError("failed to generate new key", err, true)
+		os.Exit(0)
+	}
 
 	// Grab configuration options from file
 	jsonConfig, err := os.ReadFile(configFile)
@@ -156,44 +171,20 @@ func main() {
 		remoteLogEnabled = false
 	}
 
-	// Validate key and secret from config
-	if len(config.EncryptionKey) != 32 {
-		logError("invalid key size", fmt.Errorf("the key must be 32 bytes (256-bit), but the key is %d bytes", len(config.EncryptionKey)), true)
-	}
-	if len(config.TOTPSecret) != 24 {
-		logError("invalid totp secret size", fmt.Errorf("the secret should be 24 bytes (192-bit), but it is %d bytes", len(config.TOTPSecret)), true)
-	}
+	// Get cipher block and TOTP from encryption key
+	AESGCMCipherBlock, TOTPSecret, err := prepareEncryption(config.EncryptionKey)
+	logError("failed to prepare encryption", err, true)
 
-	// Format key and IV
-	encryptionKey, err := hex.DecodeString(config.EncryptionKey)
-	logError("failed to decode supplied key", err, true)
-
-	TOTPSecret, err := hex.DecodeString(config.TOTPSecret)
-	logError("failed to decode supplied encryption IV", err, true)
-
-	// Setup encrypted message
-	CipherBlock, err := aes.NewCipher(encryptionKey)
-	logError("failed to create cipher block", err, true)
-
-	AESGCMCipherBlock, err := cipher.NewGCM(CipherBlock)
-	logError("failed to create AES-GCM cipher", err, true)
-
-	// Setup Network info
-	listenAddress := PairIPPort(config.ListenIP, config.ListenPort)
-
-	// Prep message text
-	testMessage := "deadbeefdeadbeefdeadbeefdeadbeef1928374655647382910"
-
-	// If test is requested (and in client mode), override message with test string
-	if sendTest && clientFlagExists {
-		config.FilterMessage = testMessage
-	}
-
-	// Unified value for client, server udp and tcp payload sizes
-	maxPayloadSize := 1300
-
-	// Run client if requested
+	// Start client or server depending on args
 	if clientFlagExists {
+		// If test is requested, override message with test string
+		if sendTest {
+			config.FilterMessage = testMessage
+		}
+
+		// Setup Network info
+		listenAddress := PairIPPort(config.ListenIP, config.ListenPort)
+
 		// Loop over endpoints in config and send packet
 		for arrayPosition, _ := range config.Remote {
 			// Override loop with user choices if requested
@@ -216,13 +207,9 @@ func main() {
 			remoteAddress := PairIPPort(config.Remote[arrayPosition].IP, config.Remote[arrayPosition].Port)
 
 			// Send packet
-			clientConnect(config.FilterMessage, TOTPSecret, AESGCMCipherBlock, listenAddress, remoteAddress, maxPayloadSize, useTCP)
+			clientConnect(config.FilterMessage, TOTPSecret, AESGCMCipherBlock, listenAddress, remoteAddress, useTCP)
 		}
-		os.Exit(0)
-	}
-
-	// Start server if requested
-	if serverFlagExists {
+	} else if serverFlagExists {
 		// Prepare correct shutdown command
 		var command *exec.Cmd
 		switch runtime.GOOS {
@@ -244,6 +231,9 @@ func main() {
 			}
 		}
 
+		// Setup Network info
+		listenAddress := PairIPPort(config.ListenIP, config.ListenPort)
+
 		// Join exepcted IP and port for compare on connect
 		confRemoteAddr := PairIPPort(config.Remote[0].IP, config.Remote[0].Port)
 
@@ -252,21 +242,21 @@ func main() {
 
 		// Start the server
 		if useTCP {
-			serverModeTCP(listenAddress, confRemoteAddr, rateLimiter, externalCheckScript, testMessage, config.FilterMessage, maxPayloadSize, TOTPSecret, AESGCMCipherBlock, command)
+			serverModeTCP(listenAddress, confRemoteAddr, rateLimiter, externalCheckScript, config.FilterMessage, TOTPSecret, AESGCMCipherBlock, command)
 		} else {
-			serverModeUDP(listenAddress, confRemoteAddr, rateLimiter, externalCheckScript, testMessage, config.FilterMessage, maxPayloadSize, TOTPSecret, AESGCMCipherBlock, command)
+			serverModeUDP(listenAddress, confRemoteAddr, rateLimiter, externalCheckScript, config.FilterMessage, TOTPSecret, AESGCMCipherBlock, command)
 		}
-		os.Exit(0)
+	} else {
+		// If no arguments
+		fmt.Printf("No arguments specified! Use '-h' or '--help' to guide your way.\n")
 	}
-
-	// If no arguments
-	fmt.Printf("No arguments specified! Use '-h' or '--help' to guide your way.\n")
 }
 
 // ###################################
 //	MISC PARSING
 // ###################################
 
+// Based on IPv6 or v4, combines IP and port strings, colon separator
 func PairIPPort(IP string, Port string) (IPPort string) {
 	if strings.Contains(IP, ":") {
 		IPPort = "[" + IP + "]:" + Port
@@ -275,4 +265,3 @@ func PairIPPort(IP string, Port string) (IPPort string) {
 	}
 	return
 }
-

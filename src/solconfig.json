@@ -8,8 +8,7 @@
     "Port": "3493"
     }
   ],
-  "encryptionKey": "eda93e096f02c8ee5dff91d5d911cfb3",
-  "TOTPSecret": "cc6399259b2cd84efa9371cb",
+  "encryptionKey": "eda93e096f02c8ee5dff91d5d911cfb3cc6399259b2cd84efa9371cb",
   "filterMessage": "shutdownserver",
   "remoteLog":
   {

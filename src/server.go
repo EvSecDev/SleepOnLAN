@@ -15,7 +15,8 @@ import (
 //	SERVER - RECEVING SHUTDOWN
 // ###################################
 
-func serverModeUDP(listenAddress string, confRemoteAddr string, rateLimiter <-chan time.Time, externalCheckScript string, testMessage string, filterMessage string, maxPayloadSize int, TOTPSecret []byte, AESGCMCipherBlock cipher.AEAD, command *exec.Cmd) {
+// Sets up UDP listener and reads incoming packets payloads
+func serverModeUDP(listenAddress string, confRemoteAddr string, rateLimiter <-chan time.Time, externalCheckScript string, filterMessage string, TOTPSecret []byte, AESGCMCipherBlock cipher.AEAD, command *exec.Cmd) {
 	// Recover from panic
 	defer func() {
 		if r := recover(); r != nil {
@@ -49,7 +50,7 @@ func serverModeUDP(listenAddress string, confRemoteAddr string, rateLimiter <-ch
 		}
 
 		// Process received packet
-		BreakLoop := ParsePayload(recvBuffer, recvDataLen, maxPayloadSize, remoteAddr.String(), confRemoteAddr, externalCheckScript, testMessage, filterMessage, TOTPSecret, AESGCMCipherBlock, command)
+		BreakLoop := ParsePayload(recvBuffer, recvDataLen, remoteAddr.String(), confRemoteAddr, externalCheckScript, filterMessage, TOTPSecret, AESGCMCipherBlock, command)
 
 		// Exit server if requested (shutdown commencing)
 		if BreakLoop {
@@ -58,7 +59,9 @@ func serverModeUDP(listenAddress string, confRemoteAddr string, rateLimiter <-ch
 	}
 }
 
-func serverModeTCP(listenAddress string, confRemoteAddr string, rateLimiter <-chan time.Time, externalCheckScript string, testMessage string, filterMessage string, maxPayloadSize int, TOTPSecret []byte, AESGCMCipherBlock cipher.AEAD, command *exec.Cmd) {
+// Sets up TCP listener and reads incoming packets payloads
+// Closes connection immediately after reading first packets payload (after handshake)
+func serverModeTCP(listenAddress string, confRemoteAddr string, rateLimiter <-chan time.Time, externalCheckScript string, filterMessage string, TOTPSecret []byte, AESGCMCipherBlock cipher.AEAD, command *exec.Cmd) {
 	// Recover from panic
 	defer func() {
 		if r := recover(); r != nil {
@@ -100,7 +103,7 @@ func serverModeTCP(listenAddress string, confRemoteAddr string, rateLimiter <-ch
 		tcpConn.Close()
 
 		// Process received packet
-		BreakLoop := ParsePayload(recvBuffer, recvDataLen, maxPayloadSize, tcpConn.RemoteAddr().String(), confRemoteAddr, externalCheckScript, testMessage, filterMessage, TOTPSecret, AESGCMCipherBlock, command)
+		BreakLoop := ParsePayload(recvBuffer, recvDataLen, tcpConn.RemoteAddr().String(), confRemoteAddr, externalCheckScript, filterMessage, TOTPSecret, AESGCMCipherBlock, command)
 
 		// Exit server if requested (shutdown commencing)
 		if BreakLoop {
@@ -109,9 +112,15 @@ func serverModeTCP(listenAddress string, confRemoteAddr string, rateLimiter <-ch
 	}
 }
 
-func ParsePayload(recvBuffer []byte, recvDataLen int, maxPayloadSize int, remoteAddr string, confRemoteAddr string, externalCheckScript string, testMessage string, filterMessage string, TOTPSecret []byte, AESGCMCipherBlock cipher.AEAD, command *exec.Cmd) (BreakLoop bool) {
-	// Don't process further if data length is over max payload size
+// Decrypts and validates message in packet data payload
+// Runs commands to shutdown the system if valid and non-test message
+// Handles either TCP or UDP
+func ParsePayload(recvBuffer []byte, recvDataLen int, remoteAddr string, confRemoteAddr string, externalCheckScript string, filterMessage string, TOTPSecret []byte, AESGCMCipherBlock cipher.AEAD, command *exec.Cmd) (BreakLoop bool) {
+	// Don't process further if data length is over max payload size or too small
 	if recvDataLen > maxPayloadSize {
+		return
+	}
+	if recvDataLen < 5 {
 		return
 	}
 
@@ -185,4 +194,3 @@ func ParsePayload(recvBuffer []byte, recvDataLen int, maxPayloadSize int, remote
 	logMessage(fmt.Sprintf("Failed: shutdown command resulted in error: %s", stderr.String()))
 	return
 }
-

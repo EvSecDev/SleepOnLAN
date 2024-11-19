@@ -11,7 +11,9 @@ import (
 //	CLIENT - SENDING SHUTDOWN
 // ###################################
 
-func clientConnect(filterMessage string, TOTPSecret []byte, AESGCMCipherBlock cipher.AEAD, listenAddress string, remoteAddress string, maxPayloadSize int, useTCP bool) {
+// Handles both TCP and UDP based on useTCP boolean
+// Encrypts filterMessage with TOTPSecret, then sends to the remote addess
+func clientConnect(filterMessage string, TOTPSecret []byte, AESGCMCipherBlock cipher.AEAD, listenAddress string, remoteAddress string, useTCP bool) {
 	// Recover from panic
 	defer func() {
 		if r := recover(); r != nil {
@@ -33,10 +35,10 @@ func clientConnect(filterMessage string, TOTPSecret []byte, AESGCMCipherBlock ci
 		listenAddr, err = net.ResolveUDPAddr(L4Protocol, listenAddress)
 		remoteAddr, err = net.ResolveUDPAddr(L4Protocol, remoteAddress)
 	}
-	logError("failed to resolve addresses", err ,true)
+	logError("failed to resolve addresses", err, true)
 
 	// Create a Dialer with the local address
-	dialer := net.Dialer {
+	dialer := net.Dialer{
 		LocalAddr: listenAddr,
 	}
 
